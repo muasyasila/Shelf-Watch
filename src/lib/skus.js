@@ -5,7 +5,9 @@ const skus = [
     brand: "Broadways", 
     reorderPoint: 20, 
     category: "Edible Oils",
-    dailySalesRate: 8
+    dailySalesRate: 8,
+    competitorStock: 45,
+    competitorName: "Bidco Oil"
   },
   { 
     id: "SKU-002", 
@@ -13,7 +15,9 @@ const skus = [
     brand: "Broadways", 
     reorderPoint: 25, 
     category: "Grains",
-    dailySalesRate: 12
+    dailySalesRate: 12,
+    competitorStock: 18,
+    competitorName: "Jogoo Flour"
   },
   { 
     id: "SKU-003", 
@@ -21,7 +25,9 @@ const skus = [
     brand: "Broadways", 
     reorderPoint: 15, 
     category: "Household",
-    dailySalesRate: 5
+    dailySalesRate: 5,
+    competitorStock: 32,
+    competitorName: "Sunlight"
   },
   { 
     id: "SKU-004", 
@@ -29,7 +35,9 @@ const skus = [
     brand: "Broadways", 
     reorderPoint: 30, 
     category: "Dairy",
-    dailySalesRate: 15
+    dailySalesRate: 15,
+    competitorStock: 8,
+    competitorName: "Brookside"
   },
   { 
     id: "SKU-005", 
@@ -37,7 +45,9 @@ const skus = [
     brand: "Broadways", 
     reorderPoint: 20, 
     category: "Pantry",
-    dailySalesRate: 10
+    dailySalesRate: 10,
+    competitorStock: 25,
+    competitorName: "Mumias Sugar"
   }
 ];
 

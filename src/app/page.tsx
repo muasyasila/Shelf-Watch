@@ -9,12 +9,34 @@ import {
   AlertTriangle, 
   AlertCircle,
   RefreshCw,
+  TrendingUp,
+  Target,
+  Send,
+  CheckCircle,
+  Clock,
+  PlayCircle,
+  CheckSquare,
+  BarChart3,
 } from "lucide-react";
 import storesData from "@/lib/stores";
 import skusData from "@/lib/skus";
 import inventoryData from "@/lib/inventory";
 
-// Helper function to determine stock status
+// Helper function to determine stock status based on days remaining (for simulator)
+function getStockStatusFromDays(daysUntilStockout: string) {
+  if (daysUntilStockout === "Out of stock" || daysUntilStockout === "0 days") {
+    return { status: "critical", label: "Out of stock", color: "bg-red-100 text-red-700" };
+  }
+  if (daysUntilStockout === "1 day") {
+    return { status: "critical", label: "Critical", color: "bg-red-100 text-red-700" };
+  }
+  if (daysUntilStockout === "2 days" || daysUntilStockout === "3 days") {
+    return { status: "risk", label: "At risk", color: "bg-yellow-100 text-yellow-700" };
+  }
+  return { status: "ok", label: "Healthy", color: "bg-green-100 text-green-700" };
+}
+
+// Helper function to determine stock status from threshold
 function getStockStatus(stock: number, threshold: number) {
   if (stock === 0) return { status: "critical", label: "Out of stock", color: "bg-red-100 text-red-700" };
   if (stock < threshold * 0.5) return { status: "critical", label: "Critical", color: "bg-red-100 text-red-700" };
@@ -22,10 +44,11 @@ function getStockStatus(stock: number, threshold: number) {
   return { status: "ok", label: "Healthy", color: "bg-green-100 text-green-700" };
 }
 
-// Helper function to calculate days until stockout
-function getDaysUntilStockout(stock: number, dailySalesRate: number) {
+// Helper function to calculate days until stockout with sales increase factor
+function getDaysUntilStockout(stock: number, dailySalesRate: number, salesIncreasePercent: number = 0) {
   if (dailySalesRate === 0) return "N/A";
-  const days = Math.floor(stock / dailySalesRate);
+  const adjustedRate = dailySalesRate * (1 + salesIncreasePercent / 100);
+  const days = Math.floor(stock / adjustedRate);
   if (days <= 0) return "Out of stock";
   if (days === 1) return "1 day";
   return `${days} days`;
@@ -46,59 +69,49 @@ export default function Home() {
   const [showAlertPanel, setShowAlertPanel] = useState(true);
   const [sentAlerts, setSentAlerts] = useState<string[]>([]);
   
-  // Calculate real stats from data
-  const getStats = () => {
-    let critical = 0;
-    let risk = 0;
-    
-    inventoryData.forEach(item => {
-      const sku = skusData.find(s => s.id === item.skuId);
-      if (sku && item.stock < sku.reorderPoint) {
-        const percentage = (item.stock / sku.reorderPoint) * 100;
-        if (percentage < 50) {
-          critical++;
-        } else {
-          risk++;
-        }
-      }
+  // "What If" Simulator state
+  const [salesIncreasePercent, setSalesIncreasePercent] = useState(0);
+  
+  // Competitor Intelligence state
+  const [showCompetitor, setShowCompetitor] = useState(false);
+  
+  // Closed Loop Tracking state
+  const [resolvedItems, setResolvedItems] = useState<Set<string>>(new Set());
+  const [inProgressItems, setInProgressItems] = useState<Set<string>>(new Set());
+  
+  // Helper function to get the current status of an item
+  const getItemTrackingStatus = (itemKey: string) => {
+    if (resolvedItems.has(itemKey)) return { status: "resolved", label: "Resolved", color: "bg-green-100 text-green-700", icon: <CheckCircle size={14} className="text-green-600" /> };
+    if (inProgressItems.has(itemKey)) return { status: "in-progress", label: "In Progress", color: "bg-blue-100 text-blue-700", icon: <Clock size={14} className="text-blue-600" /> };
+    return { status: "pending", label: "Pending", color: "bg-orange-100 text-orange-700", icon: <AlertCircle size={14} className="text-orange-600" /> };
+  };
+
+  // Mark an item as In Progress (after dispatch)
+  const markInProgress = (itemKey: string) => {
+    setInProgressItems(prev => new Set(prev).add(itemKey));
+    toast.success("Stock dispatch marked as In Progress");
+  };
+
+  // Mark an item as Resolved
+  const markResolved = (itemKey: string) => {
+    setResolvedItems(prev => new Set(prev).add(itemKey));
+    setInProgressItems(prev => {
+      const newSet = new Set(prev);
+      newSet.delete(itemKey);
+      return newSet;
     });
-    
-    return { critical, risk, total: inventoryData.length };
+    toast.success("Stockout marked as Resolved");
   };
   
-  const stats = getStats();
-  
-  // Animate numbers on load and refresh
-  useEffect(() => {
-    let startTime: number;
-    const duration = 800;
-    
-    const animate = (timestamp: number) => {
-      if (!startTime) startTime = timestamp;
-      const elapsed = timestamp - startTime;
-      const progress = Math.min(elapsed / duration, 1);
-      
-      setAnimatedNumbers({
-        critical: Math.floor(stats.critical * progress),
-        risk: Math.floor(stats.risk * progress),
-      });
-      
-      if (progress < 1) {
-        requestAnimationFrame(animate);
-      }
-    };
-    
-    requestAnimationFrame(animate);
-  }, [stats.critical, stats.risk, refreshKey]);
-  
-  // Generate filtered inventory for the table
-  const getFilteredInventory = () => {
-    // Join inventory with store and SKU data
+  // Generate filtered inventory for the table (WITH simulator)
+  const getFilteredInventoryWithSimulator = () => {
     let items = inventoryData.map(item => {
       const store = storesData.find(s => s.id === item.storeId);
       const sku = skusData.find(s => s.id === item.skuId);
-      const statusInfo = getStockStatus(item.stock, sku?.reorderPoint || 0);
-      const daysUntilStockout = getDaysUntilStockout(item.stock, sku?.dailySalesRate || 0);
+      const daysUntilStockout = getDaysUntilStockout(item.stock, sku?.dailySalesRate || 0, salesIncreasePercent);
+      const statusInfo = getStockStatusFromDays(daysUntilStockout);
+      const itemKey = `${store?.name}-${sku?.name}`;
+      const trackingStatus = getItemTrackingStatus(itemKey);
       
       return {
         storeName: store?.name || "Unknown",
@@ -113,16 +126,21 @@ export default function Home() {
         status: statusInfo.status,
         statusLabel: statusInfo.label,
         statusColor: statusInfo.color,
+        competitorStock: sku?.competitorStock || 0,
+        competitorName: sku?.competitorName || "Competitor",
+        itemKey: itemKey,
+        trackingStatus: trackingStatus.status,
+        trackingLabel: trackingStatus.label,
+        trackingColor: trackingStatus.color,
+        trackingIcon: trackingStatus.icon,
       };
     });
     
-    // Apply store filter
     if (storeFilter !== "all") {
       const store = storesData.find(s => s.id === storeFilter);
       items = items.filter(item => item.storeName === store?.name);
     }
     
-    // Apply risk filter
     if (riskFilter !== "all") {
       items = items.filter(item => item.status === riskFilter);
     }
@@ -130,9 +148,98 @@ export default function Home() {
     return items;
   };
   
-  const filteredInventory = getFilteredInventory();
+  // Generate filtered inventory WITHOUT simulator (for static displays)
+  const getFilteredInventoryStatic = () => {
+    let items = inventoryData.map(item => {
+      const store = storesData.find(s => s.id === item.storeId);
+      const sku = skusData.find(s => s.id === item.skuId);
+      const statusInfo = getStockStatus(item.stock, sku?.reorderPoint || 0);
+      const daysUntilStockout = getDaysUntilStockout(item.stock, sku?.dailySalesRate || 0, 0);
+      const itemKey = `${store?.name}-${sku?.name}`;
+      const trackingStatus = getItemTrackingStatus(itemKey);
+      
+      return {
+        storeName: store?.name || "Unknown",
+        storeLocation: store?.location || "Unknown",
+        storeRegion: store?.region || "Unknown",
+        skuName: sku?.name || "Unknown",
+        skuId: item.skuId,
+        stock: item.stock,
+        threshold: sku?.reorderPoint || 0,
+        dailySalesRate: sku?.dailySalesRate || 0,
+        daysUntilStockout: daysUntilStockout,
+        status: statusInfo.status,
+        statusLabel: statusInfo.label,
+        statusColor: statusInfo.color,
+        competitorStock: sku?.competitorStock || 0,
+        competitorName: sku?.competitorName || "Competitor",
+        itemKey: itemKey,
+        trackingStatus: trackingStatus.status,
+        trackingLabel: trackingStatus.label,
+        trackingColor: trackingStatus.color,
+        trackingIcon: trackingStatus.icon,
+      };
+    });
+    
+    if (storeFilter !== "all") {
+      const store = storesData.find(s => s.id === storeFilter);
+      items = items.filter(item => item.storeName === store?.name);
+    }
+    
+    if (riskFilter !== "all") {
+      items = items.filter(item => item.status === riskFilter);
+    }
+    
+    return items;
+  };
   
-  // Calculate store health scores
+  const filteredInventory = getFilteredInventoryWithSimulator();
+  const staticInventory = getFilteredInventoryStatic();
+  
+  // Calculate dynamic stats based on simulator
+  const getDynamicStats = () => {
+    let critical = 0;
+    let risk = 0;
+    
+    inventoryData.forEach(item => {
+      const sku = skusData.find(s => s.id === item.skuId);
+      const daysUntilStockout = getDaysUntilStockout(item.stock, sku?.dailySalesRate || 0, salesIncreasePercent);
+      if (daysUntilStockout === "Out of stock" || daysUntilStockout === "0 days" || daysUntilStockout === "1 day") {
+        critical++;
+      } else if (daysUntilStockout === "2 days" || daysUntilStockout === "3 days") {
+        risk++;
+      }
+    });
+    
+    return { critical, risk };
+  };
+  
+  const dynamicStats = getDynamicStats();
+  
+  // Animate numbers on load and when simulator changes
+  useEffect(() => {
+    let startTime: number;
+    const duration = 500;
+    
+    const animate = (timestamp: number) => {
+      if (!startTime) startTime = timestamp;
+      const elapsed = timestamp - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      
+      setAnimatedNumbers({
+        critical: Math.floor(dynamicStats.critical * progress),
+        risk: Math.floor(dynamicStats.risk * progress),
+      });
+      
+      if (progress < 1) {
+        requestAnimationFrame(animate);
+      }
+    };
+    
+    requestAnimationFrame(animate);
+  }, [dynamicStats.critical, dynamicStats.risk, refreshKey, salesIncreasePercent]);
+  
+  // Calculate store health scores (static, based on threshold)
   const getStoreHealth = (storeId: number) => {
     const storeItems = inventoryData.filter(item => item.storeId === storeId);
     let healthyCount = 0;
@@ -153,7 +260,6 @@ export default function Home() {
     setRefreshKey(prev => prev + 1);
   };
 
-  // Dispatch handlers
   const handleDispatch = (item: any) => {
     setSelectedItem(item);
     setDispatchQuantity(Math.max(item.threshold * 2, 50));
@@ -161,7 +267,6 @@ export default function Home() {
   };
 
   const confirmDispatch = () => {
-    // Mock API call
     console.log("Dispatch order created:", {
       store: selectedItem.storeName,
       product: selectedItem.skuName,
@@ -170,37 +275,39 @@ export default function Home() {
       timestamp: new Date().toISOString(),
     });
     
-    // Show success toast
     toast.success(`Dispatched ${dispatchQuantity} units of ${selectedItem.skuName} to ${selectedItem.storeName}`);
     
-    // Track dispatch as an action in alerts
     const alertKey = `dispatch-${selectedItem.storeName}-${selectedItem.skuName}-${Date.now()}`;
     setSentAlerts(prev => [alertKey, ...prev].slice(0, 5));
     
-    // Close modal
+    // Mark as in progress automatically
+    const itemKey = `${selectedItem.storeName}-${selectedItem.skuName}`;
+    markInProgress(itemKey);
+    
     setIsModalOpen(false);
     setSelectedItem(null);
   };
 
-  // SMS Alert handler
   const sendSMSAlert = (item: any) => {
-    // Create alert message
-    const alertMessage = `🚨 STOCKOUT ALERT: ${item.storeName} has ${item.stock} units of ${item.skuName} remaining (${item.daysUntilStockout} left). Dispatch immediately to prevent lost sales.`;
+    const alertMessage = `STOCKOUT ALERT: ${item.storeName} has ${item.stock} units of ${item.skuName} remaining (${item.daysUntilStockout} left). Dispatch immediately to prevent lost sales.`;
     
-    // Mock SMS sending
     console.log("SMS sent to store manager:", {
       to: `+2547XX XXX ${item.storeName.slice(0, 4)}`,
       message: alertMessage,
       timestamp: new Date().toISOString(),
     });
     
-    // Add to sent alerts list
     const alertKey = `${item.storeName}-${item.skuName}-${Date.now()}`;
-    setSentAlerts(prev => [alertKey, ...prev].slice(0, 5)); // Keep last 5 alerts
+    setSentAlerts(prev => [alertKey, ...prev].slice(0, 5));
     
-    // Show success toast
     toast.success(`SMS alert sent to ${item.storeName} manager`);
   };
+
+  // Calculate tracking stats
+  const pendingCount = filteredInventory.filter(i => i.trackingStatus === "pending").length;
+  const inProgressCount = filteredInventory.filter(i => i.trackingStatus === "in-progress").length;
+  const resolvedCount = filteredInventory.filter(i => i.trackingStatus === "resolved").length;
+  const resolutionRate = filteredInventory.length === 0 ? 0 : Math.round((resolvedCount / filteredInventory.length) * 100);
 
   return (
     <>
@@ -276,6 +383,11 @@ export default function Home() {
               </div>
               <p className="text-2xl font-semibold text-gray-900">{animatedNumbers.critical}</p>
               <p className="text-sm text-gray-500 mt-1">Critical stockouts</p>
+              {salesIncreasePercent > 0 && (
+                <p className="text-xs text-red-400 mt-1">
+                  ↑ {dynamicStats.critical - (staticInventory.filter(i => i.status === "critical").length)} from normal
+                </p>
+              )}
             </motion.div>
             
             <motion.div 
@@ -289,6 +401,170 @@ export default function Home() {
               </div>
               <p className="text-2xl font-semibold text-gray-900">{animatedNumbers.risk}</p>
               <p className="text-sm text-gray-500 mt-1">At risk</p>
+              {salesIncreasePercent > 0 && (
+                <p className="text-xs text-yellow-400 mt-1">
+                  ↑ {dynamicStats.risk - (staticInventory.filter(i => i.status === "risk").length)} from normal
+                </p>
+              )}
+            </motion.div>
+          </div>
+
+          {/* Closed Loop Summary Card */}
+          <div className="mb-10">
+            <motion.div 
+              initial={{ y: 10, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              transition={{ delay: 0.22 }}
+              className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-5 shadow-sm border border-blue-100"
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center">
+                    <BarChart3 size={20} className="text-white" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-900">Closed Loop Tracking</h3>
+                    <p className="text-sm text-gray-600">Detect → Act → Track → Resolve</p>
+                  </div>
+                </div>
+                
+                <div className="flex gap-4">
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-orange-600">{pendingCount}</p>
+                    <p className="text-xs text-gray-500">Pending</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-blue-600">{inProgressCount}</p>
+                    <p className="text-xs text-gray-500">In Progress</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-green-600">{resolvedCount}</p>
+                    <p className="text-xs text-gray-500">Resolved</p>
+                  </div>
+                </div>
+                
+                <div className="text-right">
+                  <p className="text-xs text-gray-500">Resolution rate</p>
+                  <p className="text-lg font-bold text-gray-900">{resolutionRate}%</p>
+                </div>
+              </div>
+              
+              {/* Progress bar */}
+              <div className="mt-4 w-full bg-gray-200 rounded-full h-2">
+                <div 
+                  className="bg-green-500 h-2 rounded-full transition-all"
+                  style={{ width: `${resolutionRate}%` }}
+                />
+              </div>
+            </motion.div>
+          </div>
+
+          {/* "What If" Simulator */}
+          <div className="mb-10">
+            <motion.div 
+              initial={{ y: 10, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              transition={{ delay: 0.25 }}
+              className="bg-gradient-to-r from-[#0e2820] to-[#1a4a38] rounded-xl p-5 shadow-sm"
+            >
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <TrendingUp size={20} className="text-white" />
+                    <h3 className="text-white font-semibold">"What If" Simulator</h3>
+                    <span className="text-xs bg-white/20 text-white px-2 py-0.5 rounded-full">Pro</span>
+                  </div>
+                  <p className="text-white/70 text-sm">
+                    Sales increase by <span className="text-[#dbfe7a] font-bold">{salesIncreasePercent}%</span>
+                  </p>
+                </div>
+                
+                <div className="flex-1">
+                  <input
+                    type="range"
+                    min="0"
+                    max="50"
+                    step="5"
+                    value={salesIncreasePercent}
+                    onChange={(e) => setSalesIncreasePercent(Number(e.target.value))}
+                    className="w-full h-2 bg-white/20 rounded-lg appearance-none cursor-pointer accent-[#dbfe7a]"
+                  />
+                  <div className="flex justify-between text-white/50 text-xs mt-1">
+                    <span>0%</span>
+                    <span>10%</span>
+                    <span>20%</span>
+                    <span>30%</span>
+                    <span>40%</span>
+                    <span>50%</span>
+                  </div>
+                </div>
+                
+                <div className="text-right">
+                  <p className="text-white/50 text-xs">Impact</p>
+                  <p className="text-[#dbfe7a] font-semibold text-sm">
+                    {salesIncreasePercent === 0 ? "Current forecast" : 
+                     salesIncreasePercent <= 20 ? "Critical stockouts increased" :
+                     salesIncreasePercent <= 40 ? "Major stockout risk" : "Severe stockout crisis"}
+                  </p>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+
+          {/* Competitor Intelligence Toggle */}
+          <div className="mb-10">
+            <motion.div 
+              initial={{ y: 10, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              transition={{ delay: 0.27 }}
+              className="bg-white rounded-xl p-5 shadow-sm border border-gray-100"
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-[#0e2820] rounded-full flex items-center justify-center">
+                    <Target size={20} className="text-white" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-900">Competitor Intelligence</h3>
+                    <p className="text-sm text-gray-500">See how your stock compares to competitors</p>
+                  </div>
+                </div>
+                
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-gray-500">Off</span>
+                  <button
+                    onClick={() => setShowCompetitor(!showCompetitor)}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                      showCompetitor ? "bg-[#0e2820]" : "bg-gray-300"
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                        showCompetitor ? "translate-x-6" : "translate-x-1"
+                      }`}
+                    />
+                  </button>
+                  <span className="text-sm text-gray-500">On</span>
+                  {showCompetitor && (
+                    <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">
+                      Intelligence Active
+                    </span>
+                  )}
+                </div>
+              </div>
+              
+              {showCompetitor && (
+                <motion.div 
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-100"
+                >
+                  <p className="text-xs text-blue-700">
+                    Showing competitor stock levels. <span className="font-semibold">Green highlight</span> = You have more stock than competitor (advantage). 
+                    <span className="font-semibold text-red-600"> Red highlight</span> = Competitor has more stock than you (risk).
+                  </p>
+                </motion.div>
+              )}
             </motion.div>
           </div>
 
@@ -329,17 +605,32 @@ export default function Home() {
                         style={{ width: `${healthScore}%` }}
                       />
                     </div>
+                    {salesIncreasePercent > 0 && (
+                      <div className="mt-2 pt-2 border-t border-gray-100">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs text-gray-400">If +{salesIncreasePercent}% sales</p>
+                          <p className={`text-xs font-medium ${
+                            healthScore - salesIncreasePercent/2 < 40 ? "text-red-500" :
+                            healthScore - salesIncreasePercent/2 < 60 ? "text-yellow-500" :
+                            "text-green-500"
+                          }`}>
+                            {Math.max(0, Math.min(100, healthScore - Math.floor(salesIncreasePercent/2)))}%
+                          </p>
+                        </div>
+                      </div>
+                    )}
                   </motion.div>
                 );
               })}
             </div>
           </div>
 
-                    {/* SMS Alert Panel */}
+          {/* SMS Alert Panel */}
           <div className="mb-10">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
-                <h2 className="text-base font-semibold text-gray-900">🚨 Stockout Alerts</h2>
+                <Send size={18} className="text-gray-600" />
+                <h2 className="text-base font-semibold text-gray-900">Stockout Alerts</h2>
                 <button 
                   onClick={() => setShowAlertPanel(!showAlertPanel)}
                   className="text-xs text-gray-400 hover:text-gray-600"
@@ -358,18 +649,16 @@ export default function Home() {
                 animate={{ height: "auto", opacity: 1 }}
                 className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden"
               >
-                {/* Critical Alerts List - Show ALL */}
                 <div className="divide-y divide-gray-100 max-h-96 overflow-y-auto">
                   {filteredInventory.filter(item => item.status === "critical").length === 0 ? (
                     <div className="p-6 text-center">
-                      <div className="text-2xl mb-2">✅</div>
+                      <CheckCircle size={32} className="text-green-500 mx-auto mb-2" />
                       <p className="text-sm text-gray-500">No critical stockouts right now</p>
                       <p className="text-xs text-gray-400 mt-1">All stores have healthy inventory levels</p>
                     </div>
                   ) : (
                     filteredInventory
                       .filter(item => item.status === "critical")
-                      // Show ALL critical items now
                       .map((item, idx) => (
                         <motion.div 
                           key={`alert-${idx}`}
@@ -398,7 +687,8 @@ export default function Home() {
                               onClick={() => sendSMSAlert(item)}
                               className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 transition-colors whitespace-nowrap"
                             >
-                              📱 Send SMS Alert
+                              <Send size={12} />
+                              Send Alert
                             </button>
                           </div>
                         </motion.div>
@@ -406,14 +696,14 @@ export default function Home() {
                   )}
                 </div>
                 
-                {/* Recent Alerts History */}
                 {sentAlerts.length > 0 && (
                   <div className="bg-gray-50 border-t border-gray-100 px-4 py-3">
                     <p className="text-xs font-medium text-gray-500 mb-2">Recent alerts sent</p>
                     <div className="space-y-1">
                       {sentAlerts.slice(0, 3).map((alert, idx) => (
                         <p key={idx} className="text-xs text-gray-600">
-                          ✓ {alert.startsWith('dispatch-') ? 'Dispatch order' : 'SMS alert'} sent {idx === 0 ? "just now" : "earlier"}
+                          <CheckCircle size={10} className="inline mr-1 text-green-500" />
+                          {alert.startsWith('dispatch-') ? 'Dispatch order' : 'SMS alert'} sent {idx === 0 ? "just now" : "earlier"}
                         </p>
                       ))}
                     </div>
@@ -429,7 +719,6 @@ export default function Home() {
               <h2 className="text-base font-semibold text-gray-900">Inventory details</h2>
               
               <div className="flex gap-3">
-                {/* Store filter */}
                 <select 
                   value={storeFilter}
                   onChange={(e) => setStoreFilter(e.target.value === "all" ? "all" : Number(e.target.value))}
@@ -441,7 +730,6 @@ export default function Home() {
                   ))}
                 </select>
                 
-                {/* Risk filter */}
                 <select 
                   value={riskFilter}
                   onChange={(e) => setRiskFilter(e.target.value as "all" | "critical" | "risk" | "ok")}
@@ -455,7 +743,6 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Table */}
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full">
@@ -464,16 +751,20 @@ export default function Home() {
                       <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-5 py-3">Store</th>
                       <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-5 py-3">Product</th>
                       <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-5 py-3">Stock</th>
+                      {showCompetitor && (
+                        <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-5 py-3">Competitor Stock</th>
+                      )}
                       <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-5 py-3">Daily Sales</th>
                       <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-5 py-3">Days Until Stockout</th>
                       <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-5 py-3">Status</th>
+                      <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-5 py-3">Resolution</th>
                       <th className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-5 py-3"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
                     {filteredInventory.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="text-center py-12">
+                        <td colSpan={showCompetitor ? 9 : 8} className="text-center py-12">
                           <div className="text-gray-400 text-sm">No inventory items match your filters</div>
                         </td>
                       </tr>
@@ -503,6 +794,25 @@ export default function Home() {
                               {item.stock} units
                             </p>
                           </td>
+                          {showCompetitor && (
+                            <td className="px-5 py-3">
+                              <div className="flex items-center gap-2">
+                                <p className={`text-sm font-semibold ${
+                                  item.stock > item.competitorStock ? "text-green-600" :
+                                  item.stock < item.competitorStock ? "text-red-600" :
+                                  "text-gray-600"
+                                }`}>
+                                  {item.competitorStock} units
+                                </p>
+                                {item.stock > item.competitorStock ? (
+                                  <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full">Advantage</span>
+                                ) : item.stock < item.competitorStock ? (
+                                  <span className="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full">Risk</span>
+                                ) : null}
+                              </div>
+                              <p className="text-xs text-gray-400 mt-0.5">{item.competitorName}</p>
+                            </td>
+                          )}
                           <td className="px-5 py-3">
                             <p className="text-sm text-gray-600">{item.dailySalesRate} units/day</p>
                           </td>
@@ -524,11 +834,45 @@ export default function Home() {
                             </span>
                           </td>
                           <td className="px-5 py-3">
+                            <div className="flex flex-col gap-1">
+                              <div className="flex items-center gap-1">
+                                {item.trackingIcon}
+                                <span className={`text-xs font-medium px-2 py-1 rounded-full ${item.trackingColor}`}>
+                                  {item.trackingLabel}
+                                </span>
+                              </div>
+                              {item.trackingStatus === "pending" && (
+                                <button
+                                  onClick={() => markInProgress(item.itemKey)}
+                                  className="text-xs text-blue-600 hover:text-blue-800 text-left flex items-center gap-1"
+                                >
+                                  <PlayCircle size={12} />
+                                  Start resolution
+                                </button>
+                              )}
+                              {item.trackingStatus === "in-progress" && (
+                                <button
+                                  onClick={() => markResolved(item.itemKey)}
+                                  className="text-xs text-green-600 hover:text-green-800 text-left flex items-center gap-1"
+                                >
+                                  <CheckSquare size={12} />
+                                  Mark resolved
+                                </button>
+                              )}
+                              {item.trackingStatus === "resolved" && (
+                                <span className="text-xs text-green-600 flex items-center gap-1">
+                                  <CheckCircle size={12} />
+                                  Completed
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-5 py-3">
                             <button 
                               onClick={() => handleDispatch(item)}
                               className="text-xs font-medium bg-[#dbfe7a] text-[#0e2820] px-3 py-1.5 rounded-lg hover:bg-[#c8ed6a] transition-all hover:scale-105"
                             >
-                              Dispatch →
+                              Dispatch
                             </button>
                           </td>
                         </motion.tr>
@@ -539,10 +883,19 @@ export default function Home() {
               </div>
             </div>
             
-            {/* Table footer with count */}
             <div className="mt-4 text-right">
               <p className="text-xs text-gray-400">
                 Showing {filteredInventory.length} of {inventoryData.length} items
+                {salesIncreasePercent > 0 && (
+                  <span className="text-[#0e2820] ml-2">
+                    (Simulating {salesIncreasePercent}% sales increase)
+                  </span>
+                )}
+                {showCompetitor && (
+                  <span className="text-[#0e2820] ml-2">
+                    (Competitor intelligence active)
+                  </span>
+                )}
               </p>
             </div>
           </div>
@@ -557,12 +910,10 @@ export default function Home() {
             animate={{ scale: 1, opacity: 1 }}
             className="bg-white rounded-2xl max-w-md w-full mx-4 overflow-hidden"
           >
-            {/* Modal Header */}
             <div className="bg-[#0e2820] px-6 py-4">
               <h3 className="text-white font-semibold">Dispatch Restock Order</h3>
             </div>
             
-            {/* Modal Body */}
             <div className="p-6">
               <div className="mb-4">
                 <p className="text-sm text-gray-500">Store</p>
@@ -609,12 +960,11 @@ export default function Home() {
               
               <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4">
                 <p className="text-xs text-yellow-700">
-                  ⚡ This order will be prioritized. Estimated delivery: Tomorrow
+                  This order will be prioritized. Estimated delivery: Tomorrow
                 </p>
               </div>
             </div>
             
-            {/* Modal Footer */}
             <div className="border-t border-gray-100 px-6 py-4 flex gap-3 justify-end">
               <button 
                 onClick={() => setIsModalOpen(false)}
@@ -626,14 +976,13 @@ export default function Home() {
                 onClick={confirmDispatch}
                 className="px-4 py-2 text-sm font-medium bg-[#dbfe7a] text-[#0e2820] rounded-lg hover:bg-[#c8ed6a] transition-colors"
               >
-                Confirm Dispatch →
+                Confirm Dispatch
               </button>
             </div>
           </motion.div>
         </div>
       )}
 
-      {/* Toaster for notifications */}
       <Toaster position="top-right" />
     </>
   );
