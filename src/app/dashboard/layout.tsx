@@ -14,6 +14,7 @@ import {
   User,
   Menu,
   X,
+  Database,
 } from "lucide-react";
 import { logout } from "@/lib/logout";
 import { usePathname } from "next/navigation";
@@ -48,6 +49,7 @@ export default function DashboardLayout({
 
 const navItems = [
   { name: "Overview", icon: LayoutDashboard, href: "/dashboard", current: pathname === "/dashboard" },
+   { name: "Pipeline", icon: Database, href: "/dashboard/pipeline", current: pathname === "/dashboard/pipeline" },
   { name: "Inventory", icon: Package, href: "/dashboard/inventory", current: pathname === "/dashboard/inventory" },
   { name: "Analytics", icon: TrendingUp, href: "/dashboard/analytics", current: false },
   { name: "Competitors", icon: Target, href: "/dashboard/competitors", current: false },
